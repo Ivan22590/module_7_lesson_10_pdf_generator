@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Отчёт по диалогу с клиентом</title>
+</head>
+<body>
+    <!-- Заголовок отчёта -->
+    <h1 align="center">Отчёт по диалогу с клиентом</h1>
+    <p align="center"><font color="#7f8c8d" size="9">Анализ обращения с помощью ИИ — {{ generated_at }}</font></p>
+    <hr>
+
+    <!-- Информация о клиенте -->
+    <h2><font color="#2980b9">Информация о клиенте</font></h2>
+    <p><font color="#95a5a6" size="8">КЛИЕНТ:</font><br><b>{{ client_name }}</b></p>
+    <p><font color="#95a5a6" size="8">ТЕМА ОБРАЩЕНИЯ:</font><br><b>{{ topic }}</b></p>
+
+    <!-- Основной запрос -->
+    <h2><font color="#2980b9">Основной запрос</font></h2>
+    <div bgcolor="#f8f9fa">{{ main_request }}</div>
+
+    <!-- Настроение клиента -->
+    <h2><font color="#2980b9">Настроение клиента</font></h2>
+    <p><font color="{{ mood_color }}"><b>{{ mood }}</b></font>{% if mood_comment %}<br>{{ mood_comment }}{% endif %}</p>
+
+    <!-- Следующие шаги -->
+    <h2><font color="#2980b9">Следующие шаги</font></h2>
+    <div bgcolor="#eaf2f8">
+        {{ next_steps | safe }}
+    </div>
+
+    <!-- Транскрибация диалога -->
+    <h2><font color="#2980b9">Транскрибация диалога</font></h2>
+    {{ transcript | safe }}
+
+    <hr>
+    <p align="center"><font color="#95a5a6" size="8">AI Client Report Generator &copy; {{ generated_at_year }} — Документ сформирован автоматически</font></p>
+</body>
+</html>
