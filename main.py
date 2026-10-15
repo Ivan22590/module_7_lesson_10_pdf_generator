@@ -6,8 +6,10 @@ AI Client Report Generator — точка входа.
 """
 
 import argparse
+import html
 import logging
 import sys
+import time
 from pathlib import Path
 
 from ai_processor import process_dialog_with_ai
@@ -33,12 +35,30 @@ TEMPLATES_DIR = PROJECT_ROOT / "templates"
 
 
 def read_transcription_from_file(file_path: Path) -> str:
-    """Читает текст транскрибации из файла."""
+    """Читает текст транскрибации из файла.
+
+    Raises:
+        FileNotFoundError: Файл не существует.
+        ValueError: Файл пуст или не читается (некорректная кодировка).
+    """
     if not file_path.is_file():
         raise FileNotFoundError(f"Файл не найден: {file_path}")
 
-    text = file_path.read_text(encoding="utf-8")
+    logger.info("Чтение файла транскрибации: %s", file_path)
+    try:
+        text = file_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        logger.error("Ошибка кодировки файла %s: %s", file_path, e)
+        raise ValueError(
+            f"Файл '{file_path.name}' не в кодировке UTF-8. "
+            "Пересохраните его в UTF-8 и попробуйте снова."
+        ) from e
+    except OSError as e:
+        logger.error("Ошибка чтения файла %s: %s", file_path, e)
+        raise ValueError(f"Не удалось прочитать файл '{file_path}': {e}") from e
+
     if not text.strip():
+        logger.error("Файл пуст: %s", file_path)
         raise ValueError(f"Файл пуст: {file_path}")
 
     logger.info("Прочитан файл: %s (%d символов)", file_path.name, len(text))
@@ -243,20 +263,32 @@ def run_cli(file_path: Path, template_path: Path | None = None) -> None:
 
 
 def _process_and_generate(text: str, template_path: Path | None = None) -> None:
-    """Общий пайплайн: AI-обработка → генерация PDF."""
-    # Шаг 1: Обработка через ИИ
+    """
+    Общий пайплайн: AI-обработка → генерация PDF.
+
+    Все этапы логируются с таймингами. Ошибки каждого этапа обрабатываются
+    отдельно с понятным сообщением пользователю и кодом возврата 1.
+    """
+    pipeline_start = time.monotonic()
+
+    # === Этап 1: Анализ диалога через ИИ ===
+    logger.info("=== Этап 1/2: Анализ диалога через ИИ ===")
     print("\n⏳ Анализ диалога с помощью ИИ...")
+    ai_start = time.monotonic()
     try:
         ai_data = process_dialog_with_ai(text)
     except ValueError as e:
+        # Ошибки ключа/баланса/сети/валидации — понятное сообщение уже внутри
         logger.error("Ошибка ИИ-обработки: %s", e)
         print(f"\n[ОШИБКА] {e}")
         sys.exit(1)
     except Exception as e:
+        # Непредвиденная ошибка — полный стектрейс в лог для диагностики
         logger.error("Непредвиденная ошибка при обращении к ИИ: %s", e, exc_info=True)
         print(f"\n[ОШИБКА] Не удалось обратиться к ИИ: {e}")
         sys.exit(1)
 
+    logger.info("ИИ-анализ завершён за %.1f сек", time.monotonic() - ai_start)
     print("✅ Диалог проанализирован успешно!")
     print(f"   Клиент: {ai_data.get('client_name', 'Н/Д')}")
     print(f"   Тема: {ai_data.get('topic', 'Н/Д')}")
@@ -271,25 +303,44 @@ def _process_and_generate(text: str, template_path: Path | None = None) -> None:
         ),
     )
 
-    # Шаг 2: Генерация PDF
+    # === Этап 2: Генерация PDF ===
+    logger.info("=== Этап 2/2: Генерация PDF ===")
     print("\n⏳ Генерация PDF-отчёта...")
     if template_path:
         print(f"   Шаблон: {template_path.name}")
+    pdf_start = time.monotonic()
     try:
         pdf_path = generate_pdf(ai_data, template_path=template_path)
     except FileNotFoundError as e:
+        logger.error("Шаблон не найден: %s", e)
+        print(f"\n[ОШИБКА] {e}")
+        sys.exit(1)
+    except ValueError as e:
+        # Ошибка рендеринга шаблона (Jinja2)
         logger.error("Ошибка шаблона: %s", e)
         print(f"\n[ОШИБКА] {e}")
         sys.exit(1)
+    except RuntimeError as e:
+        # Ошибка конвертации/сохранения PDF
+        logger.error("Ошибка генерации PDF: %s", e)
+        print(f"\n[ОШИБКА] {e}")
+        sys.exit(1)
     except Exception as e:
-        logger.error("Ошибка генерации PDF: %s", e, exc_info=True)
+        logger.error("Непредвиденная ошибка генерации PDF: %s", e, exc_info=True)
         print(f"\n[ОШИБКА] Не удалось создать PDF: {e}")
         sys.exit(1)
 
-    # Успех
-    relative_path = pdf_path.relative_to(PROJECT_ROOT)
+    logger.info("PDF сгенерирован за %.1f сек", time.monotonic() - pdf_start)
+
+    # === Итог ===
+    total_time = time.monotonic() - pipeline_start
+    logger.info("Пайплайн завершён успешно за %.1f сек", total_time)
+    try:
+        relative_path = pdf_path.relative_to(PROJECT_ROOT)
+    except ValueError:
+        relative_path = pdf_path
     print(f"\n{'=' * 55}")
-    print(f"📄 Отчёт успешно создан: {relative_path}")
+    print(f"📄 Отчёт успешно создан: {relative_path} ({total_time:.1f} сек)")
     print(f"{'=' * 55}\n")
 
 
@@ -298,17 +349,13 @@ def _format_transcript_html(text: str) -> str:
     Форматирует транскрибацию в HTML-теги, поддерживаемые fpdf2.
 
     Реплики помечаются цветом: Оператор — синий, Клиент — фиолетовый.
-    Спецсимволы HTML экранируются вручную.
+    Спецсимволы HTML экранируются через html.escape.
     """
     lines = text.strip().split("\n")
     html_lines = []
     for line in lines:
-        # Экранируем HTML-спецсимволы
-        safe_line = (
-            line.replace("&", "&")
-            .replace("<", "<")
-            .replace(">", ">")
-        )
+        # Экранируем HTML-спецсимволы (&, <, >)
+        safe_line = html.escape(line)
         # Подсвечиваем роли цветом (fpdf2 поддерживает тег <font>)
         if "Оператор:" in safe_line:
             safe_line = safe_line.replace(
@@ -320,6 +367,7 @@ def _format_transcript_html(text: str) -> str:
             )
         html_lines.append(f"<p>{safe_line}</p>")
 
+    logger.debug("Транскрибация отформатирована в HTML: %d строк", len(html_lines))
     return "\n".join(html_lines)
 
 
@@ -348,10 +396,21 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.file:
-        run_cli(args.file, args.template)
-    else:
-        run_interactive()
+    try:
+        if args.file:
+            run_cli(args.file, args.template)
+        else:
+            run_interactive()
+    except KeyboardInterrupt:
+        # Ctrl+C — корректное завершение без стектрейса
+        print("\n\nПрервано пользователем (Ctrl+C). До свидания!")
+        logger.info("Работа прервана пользователем")
+        sys.exit(130)
+    except EOFError:
+        # Поток ввода закрыт (например, piped-режим завершился)
+        print("\n\nПоток ввода закрыт. Завершение работы.")
+        logger.info("EOF во время интерактивного ввода")
+        sys.exit(130)
 
 
 if __name__ == "__main__":
